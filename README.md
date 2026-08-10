@@ -1,4 +1,3 @@
-# AI-Agents-in-Node.js
 # Getting Started with DNotifier in Node.js
 
 A step-by-step guide to creating a DNotifier project, finding your App ID and App Secret, and connecting to DNotifier from a Node.js backend — so you can build real-time agents, notifications, and AI-powered features.
