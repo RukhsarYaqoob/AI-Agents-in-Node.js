@@ -13,9 +13,11 @@ Follow every step in order and you'll go from "no account" to "connected and rec
 - [Part 1 — Dashboard Setup](#part-1--dashboard-setup)
 - [Part 2 — Node.js Project Setup](#part-2--nodejs-project-setup)
 - [Part 3 — Connecting from Node.js](#part-3--connecting-from-nodejs)
-- [Part 4 — Sending a Test Message (Optional)](#part-4--sending-a-test-message-optional)
+- [Part 4 — Sending & Receiving Messages](#part-4--sending--receiving-messages)
 - [Part 5 — AI and RAG on the Server](#part-5--ai-and-rag-on-the-server)
+- [Understanding Incoming Messages](#understanding-incoming-messages)
 - [Common Errors & Fixes](#common-errors--fixes)
+- [Related Topics](#related-topics)
 - [Summary](#summary)
 
 ---
@@ -27,6 +29,8 @@ Follow every step in order and you'll go from "no account" to "connected and rec
 - Find your **App ID** and **App Secret**
 - Install the DNotifier SDK in a Node.js project
 - Write the connection code and confirm it connects successfully
+- Send and receive your first message
+- Understand the shape of incoming messages
 
 ## Prerequisites
 
@@ -80,11 +84,20 @@ In your Node.js backend project folder, run:
 npm install @dnotifier-realtime/dnotifier
 ```
 
+Using yarn or pnpm:
+
+```bash
+yarn add @dnotifier-realtime/dnotifier
+pnpm add @dnotifier-realtime/dnotifier
+```
+
 > 💡 **Tip:** If `ws` isn't already in your project's dependencies, install it too:
 > ```bash
 > npm install ws
 > ```
 > Node.js doesn't have a browser-native WebSocket, so the SDK needs `ws` to fill that gap. (Not needed if you're connecting from a browser — browsers have `WebSocket` built in.)
+
+> 💡 **Note:** The package ships as ESM (`import { DNotifier } from "@dnotifier-realtime/dnotifier"`) with a CommonJS build available via `require()`, plus TypeScript declarations included — no separate `@types` package needed.
 
 ### Step 6: Add Your Credentials to `.env`
 
@@ -145,7 +158,11 @@ You should see `Connected ✓` printed in your terminal, confirming the SDK succ
 
 ---
 
-## Part 4 — Sending a Test Message (Optional)
+## Part 4 — Sending & Receiving Messages
+
+The core real-time pattern: send a JSON payload to a receiver ID, and handle incoming messages in `onMessage`.
+
+### Sending a Test Message
 
 To confirm two-way communication, send a message to yourself and see it echoed back (or send from a second connected client):
 
@@ -158,6 +175,68 @@ await notifier.send({
 ```
 
 If everything is wired up correctly, your `onMessage` callback will log the payload back to the terminal.
+
+### Sending to Another User
+
+```javascript
+await notifier.send({
+  senderId: "my_backend_service",
+  receiverId: "user-bob",
+  data: {
+    type: "text",
+    text: "Hello from DNotifier!",
+  },
+  saveHistory: true, // default — set false to skip chat history persistence
+});
+```
+
+### Echo Test (Two Processes)
+
+**Process 1 — bob listens:**
+
+```javascript
+import { DNotifier } from "@dnotifier-realtime/dnotifier";
+import WebSocket from "ws";
+
+const bob = new DNotifier({
+  appId: process.env.DNOTIFIER_APP_ID,
+  secret: process.env.DNOTIFIER_SECRET,
+  transport: "ws",
+  userId: "user-bob",
+  WebSocketImpl: WebSocket,
+  onConnected: () => console.log("Bob is online"),
+  onMessage: (msg) => console.log("Bob received:", msg.payload.toJSON()),
+  onDisconnected: () => {},
+});
+
+await bob.connect();
+```
+
+**Process 2 — your backend sends:** use the connection code from [Part 3](#part-3--connecting-from-nodejs), then call `notifier.send()` with `receiverId: "user-bob"` as shown above.
+
+Expected on bob's console:
+```
+Bob received: { type: 'text', text: 'Hello from DNotifier!' }
+```
+### The `send()` Contract
+
+| Field | Required | Description |
+|---|---|---|
+| `senderId` | Yes | Must match the connecting user's `userId` |
+| `receiverId` | One of | Single recipient user ID |
+| `receiverIds` | One of | Multiple recipients (see [Related Topics](#related-topics)) |
+| `data` | Yes | JSON-serializable payload — typically `{ type: "text", text: "..." }` |
+| `saveHistory` | No | Default `true` — persist for chat history APIs |
+
+> 💡 **Tip:** DNotifier does not enforce a fixed `type` enum — use any string your app understands (`text`, `image`, `audio`, `doc`, `ping`, or your own custom types).
+
+### Requirements for Send & Receive
+
+- `transport: "ws"` — real-time send/receive uses WebSocket
+- `connect()` completed — check that `isConnected` is `true` before sending
+- Matching `appId` — sender and receiver must use the same application
+
+> 💡 **Note:** The receiver does not need to be online at send time for history-backed chat — the message is still saved. For live delivery, the receiver must be connected.
 
 ---
 
@@ -200,6 +279,30 @@ This is also the pattern to use for batch processing, cron-driven reports, and w
 
 ---
 
+## Understanding Incoming Messages
+
+Every incoming real-time message arrives as a structured object with two parts:
+- **`metadata`** — `sender` (prefixed `appId:userId` address), `timestamp` (Unix epoch ms), `id` (dedupe key, when assigned by the server), `type` (transport-level hint)
+- **`payload`** — your application data, with conversion methods: `toJSON()`, `toString()`, `raw()`, `toBase64()`
+
+Flow from send to receive:
+```
+send({ data: { type, text, ... } })
+│
+▼
+DNotifier cloud
+│
+▼
+onMessage({ metadata, payload })
+│
+├── metadata.sender → who sent it
+├── metadata.timestamp → when
+└── payload.toJSON() → your { type, text, ... }
+```
+Full reference: [Understanding messages](https://dnotifier.gitbook.io/product-docs/getting-started/understanding-messages)
+
+---
+
 ## Common Errors & Fixes
 
 | Error | Fix |
@@ -207,6 +310,19 @@ This is also the pattern to use for batch processing, cron-driven reports, and w
 | `No WebSocket implementation provided` | You forgot `WebSocketImpl: WebSocket` (Node.js only — not needed in browsers). |
 | `invalid project credentials` | Double-check you copied the App ID and Secret from the correct **project**, not the Organization-level ID. |
 | `senderId required` | Make sure every `notifier.send()` call includes `senderId`, and either `receiverId` or `receiverIds`. |
+| Receiver gets nothing | Receiver must use the same `appId` and be connected for live delivery. |
+| Auth OK but no delivery | Use `transport: "ws"`, not `"http"`, for real-time messaging. |
+
+---
+
+## Related Topics
+
+| Topic | Link |
+|---|---|
+| First message walkthrough | [Your first message](https://dnotifier.gitbook.io/product-docs/getting-started/first-message) |
+| Structured media | [Structured payloads](https://dnotifier.gitbook.io/product-docs/realtime-communication/structured-payloads) |
+| Multiple recipients | [Multiple receivers](https://dnotifier.gitbook.io/product-docs/realtime-communication/multiple-receivers) |
+| Building chat | [Building 1:1 chat](https://dnotifier.gitbook.io/product-docs/chat/building-one-to-one-chat) |
 
 ---
 
@@ -218,5 +334,6 @@ You've now:
 - ✅ Located your App ID and App Secret
 - ✅ Installed the SDK in a Node.js backend
 - ✅ Successfully connected and confirmed two-way messaging
+- ✅ Learned the shape of incoming messages (`metadata` + `payload`)
 
 From here, you can build out message handlers, AI agent logic, or real-time features on top of this connection.
